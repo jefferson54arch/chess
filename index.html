@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#17151f">
+<title>NDIL Chess Online</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#17151f;color:#f3f0fa;font:15px Arial,sans-serif}
+.wrap{max-width:520px;margin:auto;padding:18px 14px 30px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.brand{font-weight:bold;letter-spacing:2px;font-size:18px}.tag{font-size:10px;color:#b8afca;border:1px solid #514b63;padding:5px 8px;border-radius:20px}
+.panel{background:#211e2c;border:1px solid #373144;border-radius:15px;padding:14px;margin:12px 0}
+h1{font-size:23px;margin:0 0 7px}p{color:#bdb7ca;line-height:1.45;margin:6px 0 12px}
+button{font:inherit;border-radius:10px;border:0;padding:12px;background:#a991d4;color:#17121f;font-weight:bold}
+button.secondary{background:#383246;color:#eee9f8;border:1px solid #514963}
+button:disabled{opacity:.45}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{flex:1;min-width:125px}
+.small{font-size:12px;color:#a9a2b8}.status{font-weight:bold;color:#d9c9f6;min-height:22px}
+.board{width:94vw;max-width:440px;margin:14px auto;border:5px solid #302b3c;border-radius:5px;overflow:hidden}
+.rank{display:flex;width:100%}.square{position:relative;width:12.5%;height:11.75vw;max-height:54px;min-height:34px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:0}
+.light{background:#d7d2df}.dark{background:#6d6783}.square img{width:82%;height:82%;object-fit:contain;pointer-events:none}
+.square.selected{background:#c8a65d}.square.target:after{content:"";position:absolute;width:22%;height:22%;border-radius:50%;background:#27223588}
+.square.capture:after{content:"";position:absolute;inset:3px;border:3px solid #27223577;border-radius:50%}
+.topline{display:flex;justify-content:space-between;gap:8px;align-items:center}
+#moves{font-size:12px;color:#bdb7ca;max-height:70px;overflow:auto;word-break:break-word}
+footer{font-size:11px;color:#8e879e;text-align:center;margin-top:18px}
+@media(min-width:500px){.square{height:54px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header><div class="brand">NDIL CHESS</div><div class="tag">ONLINE • BETA</div></header>
+<section class="panel">
+<h1>Satranç, kendi tahtamızda.</h1>
+<p>J3 için hafif arayüz. Çevrimiçi rakip ve oyun altyapısı Lichess üzerinden çalışır.</p>
+<div id="loginArea">
+<div class="status" id="status">Lichess hesabın bağlanmadı.</div>
+<div class="actions"><button id="loginBtn">Lichess ile giriş yap</button></div>
+<p class="small">Sadece oyun oynama izni (board:play) istenir. Lichess şifren bu uygulamaya gelmez.</p>
+</div>
+<div id="userArea" style="display:none">
+<div class="status" id="userLabel"></div>
+<div class="actions"><button id="seekBtn">Rastgele rakip bul · 10+0</button><button class="secondary" id="logoutBtn">Çıkış</button></div>
+<p class="small">Derecelendirmesiz hızlı maç. Sohbet özelliği yok.</p>
+</div>
+</section>
+<section class="panel" id="boardArea" style="display:none">
+<div class="topline"><strong id="opponent">Rakip bekleniyor</strong><span class="tag" id="turnLabel">Sıra: -</span></div>
+<div class="status" id="gameStatus">Oyun yükleniyor…</div>
+<div id="board" class="board" aria-label="Satranç tahtası"></div>
+<div class="actions"><button class="secondary" id="resignBtn">Oyunu bırak</button></div>
+<div id="moves"></div>
+</section>
+<section class="panel">
+<strong>Nasıl çalışıyor?</strong>
+<p class="small">Girişten sonra 10 dakikalık derecelendirmesiz rakip araması başlatabilirsin. Hamleler Lichess sunucusuna gönderilir. Uygulama motor veya hamle önerisi sunmaz.</p>
+</section>
+<footer>NDIL Chess Online · Lichess API altyapısı · J3 için sade arayüz</footer>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+(function(){
+var CLIENT_ID="ndil-chess-online";
+var REDIRECT_URI=window.location.origin+window.location.pathname;
+var token=localStorage.getItem("ndil_lichess_token")||"",username="",gameId="",myColor="white",chess=null,selected=null;
+var eventXhr=null,gameXhr=null,eventOffset=0,gameOffset=0;
+var boardEl=document.getElementById("board"),statusEl=document.getElementById("status");
+function el(id){return document.getElementById(id)}
+function setStatus(s){statusEl.textContent=s}
+function randomString(n){var a=new Uint8Array(n);window.crypto.getRandomValues(a);var s="";for(var i=0;i<a.length;i++)s+=String.fromCharCode(a[i]);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
+function base64url(buf){var s="",a=new Uint8Array(buf);for(var i=0;i<a.length;i++)s+=String.fromCharCode(a[i]);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
+function query(){var out={},q=window.location.search.replace(/^\?/,"").split("&");for(var i=0;i<q.length;i++){if(!q[i])continue;var p=q[i].split("=");out[decodeURIComponent(p[0])]=decodeURIComponent((p[1]||"").replace(/\+/g," "));}return out}
+function api(path,method,body,done){
+ var x=new XMLHttpRequest();x.open(method,"https://lichess.org"+path,true);x.setRequestHeader("Authorization","Bearer "+token);
+ if(method!=="GET")x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
+ x.onreadystatechange=function(){if(x.readyState===4){if(x.status>=200&&x.status<300)done(null,x.responseText,x);else done(new Error("HTTP "+x.status+": "+x.responseText),null,x)}};
+ x.onerror=function(){done(new Error("Bağlantı hatası."))};x.send(body||null);return x;
+}
+function login(){
+ if(!window.crypto||!window.crypto.subtle||!window.crypto.getRandomValues){setStatus("Tarayıcı güvenli giriş özelliğini desteklemiyor. Via Browser'ı güncelle.");return}
+ var verifier=randomString(48),state=randomString(18),bytes=new Uint8Array(verifier.length);
+ for(var i=0;i<verifier.length;i++)bytes[i]=verifier.charCodeAt(i);
+ window.crypto.subtle.digest("SHA-256",bytes).then(function(hash){
+  sessionStorage.setItem("ndil_verifier",verifier);sessionStorage.setItem("ndil_state",state);
+  var url="https://lichess.org/oauth?response_type=code&client_id="+encodeURIComponent(CLIENT_ID)+"&redirect_uri="+encodeURIComponent(REDIRECT_URI)+"&code_challenge_method=S256&code_challenge="+encodeURIComponent(base64url(hash))+"&state="+encodeURIComponent(state)+"&scope=board%3Aplay";
+  window.location.href=url;
+ }).catch(function(){setStatus("Güvenli giriş başlatılamadı. HTTPS üzerinden açmayı dene.")});
+}
+function handleCallback(){
+ var q=query();if(!q.code)return;
+ var verifier=sessionStorage.getItem("ndil_verifier"),state=sessionStorage.getItem("ndil_state");
+ if(!verifier||!state||q.state!==state){setStatus("Giriş doğrulaması başarısız. Tekrar dene.");return}
+ var body="grant_type=authorization_code&code="+encodeURIComponent(q.code)+"&code_verifier="+encodeURIComponent(verifier)+"&redirect_uri="+encodeURIComponent(REDIRECT_URI)+"&client_id="+encodeURIComponent(CLIENT_ID);
+ var x=new XMLHttpRequest();x.open("POST","https://lichess.org/api/token",true);x.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
+ x.onreadystatechange=function(){if(x.readyState===4){if(x.status>=200&&x.status<300){try{var d=JSON.parse(x.responseText);token=d.access_token;localStorage.setItem("ndil_lichess_token",token);sessionStorage.removeItem("ndil_verifier");sessionStorage.removeItem("ndil_state");history.replaceState({},document.title,REDIRECT_URI);loadAccount()}catch(e){setStatus("Giriş yanıtı okunamadı.")}}else setStatus("Giriş tamamlanamadı: "+x.status)}};
+ x.onerror=function(){setStatus("Giriş bağlantısı başarısız.")};x.send(body);
+}
+function loadAccount(){
+ if(!token){el("loginArea").style.display="block";el("userArea").style.display="none";return}
+ api("/api/account","GET",null,function(err,text){
+  if(err){token="";localStorage.removeItem("ndil_lichess_token");setStatus("Lichess hesabı doğrulanamadı. Tekrar giriş yap.");return}
+  try{var d=JSON.parse(text);username=d.username;el("loginArea").style.display="none";el("userArea").style.display="block";el("userLabel").textContent="Giriş yapıldı: "+username;setStatus("Hazır.")}catch(e){setStatus("Hesap bilgisi okunamadı.")}
+ });
+}
+function readLines(xhr,offset,handler){
+ var txt=xhr.responseText||"",part=txt.substring(offset),last=part.lastIndexOf("\n");if(last<0)return offset;
+ var lines=part.substring(0,last).split("\n");for(var i=0;i<lines.length;i++){if(lines[i].trim())try{handler(JSON.parse(lines[i]))}catch(e){}}
+ return offset+last+1;
+}
+function startEventStream(){
+ if(eventXhr)eventXhr.abort();eventOffset=0;eventXhr=new XMLHttpRequest();eventXhr.open("GET","https://lichess.org/api/stream/event",true);eventXhr.setRequestHeader("Authorization","Bearer "+token);
+ eventXhr.onprogress=function(){eventOffset=readLines(eventXhr,eventOffset,onAccountEvent)};
+ eventXhr.onerror=function(){setStatus("Rakip arama bağlantısı koptu. Tekrar deneyebilirsin.")};eventXhr.send();
+}
+function onAccountEvent(e){
+ if(e.type==="gameStart"&&e.game&&e.game.id){gameId=e.game.id;myColor=e.game.color||"white";if(eventXhr){eventXhr.abort();eventXhr=null}el("boardArea").style.display="block";el("gameStatus").textContent="Rakip bulundu!";startGameStream()}
+}
+function seek(){
+ el("seekBtn").disabled=true;setStatus("Rakip aranıyor…");startEventStream();
+ api("/api/board/seek","POST","time=10&increment=0&rated=false&variant=standard&color=random",function(err){
+  if(err){if(eventXhr)eventXhr.abort();el("seekBtn").disabled=false;setStatus("Rakip araması başlatılamadı: "+err.message);return}
+  setStatus("Rakip aranıyor… Bağlantıyı açık tut.");
+ });
+}
+function stopStream(){if(gameXhr){gameXhr.abort();gameXhr=null}}
+function startGameStream(){
+ stopStream();gameOffset=0;gameXhr=new XMLHttpRequest();gameXhr.open("GET","https://lichess.org/api/board/game/stream/"+gameId,true);gameXhr.setRequestHeader("Authorization","Bearer "+token);
+ gameXhr.onprogress=function(){gameOffset=readLines(gameXhr,gameOffset,onGameEvent)};
+ gameXhr.onerror=function(){el("gameStatus").textContent="Oyun bağlantısı koptu. Sayfayı yenileyip tekrar bağlan."};gameXhr.send();
+}
+function loadMoves(moves){
+ chess=new Chess();var list=(moves||"").split(" ");for(var i=0;i<list.length;i++){var m=list[i];if(m.length>=4){var obj={from:m.substring(0,2),to:m.substring(2,4)};if(m.length>4)obj.promotion=m.charAt(4);chess.move(obj)}}
+ selected=null;renderBoard();
+}
+function onGameEvent(e){
+ if(e.type==="gameFull"){
+  if(e.white&&e.white.name&&e.black&&e.black.name){var isWhite=e.white.name.toLowerCase()===username.toLowerCase();myColor=isWhite?"white":"black";el("opponent").textContent=isWhite?"Rakip: "+e.black.name:"Rakip: "+e.white.name}
+  if(e.state)updateState(e.state);
+ }else if(e.type==="gameState")updateState(e);
+}
+function updateState(s){
+ loadMoves(s.moves||"");var turn=chess.turn()==="w"?"white":"black",ours=turn===myColor;
+ el("turnLabel").textContent="Sıra: "+(turn==="white"?"Beyaz":"Siyah");
+ el("gameStatus").textContent=s.status&&s.status!=="started"?"Oyun bitti: "+s.status:(ours?"Hamle sende.":"Rakibin hamlesi bekleniyor.");
+ el("resignBtn").disabled=!!(s.status&&s.status!=="started");el("moves").textContent="Hamleler: "+(s.moves||"").replace(/ /g,"  ");
+}
+function pieceFile(p){var color=p.color==="w"?"white":"black",type={k:"king",q:"queen",r:"rook",b:"bishop",n:"knight",p:"pawn"}[p.type];return "https://raw.githubusercontent.com/jefferson54arch/chess/main/"+type+color+".png"}
+function renderBoard(){
+ if(!chess)return;var arr=chess.board(),html="";
+ for(var r=0;r<8;r++){html+='<div class="rank">';for(var c=0;c<8;c++){
+  var rr=myColor==="white"?r:7-r,cc=myColor==="white"?c:7-c,p=arr[rr][cc],sq="abcdefgh".charAt(cc)+(8-rr),cls="square "+(((rr+cc)%2===1)?"light":"dark");
+  if(selected===sq)cls+=" selected";var legal=selected?chess.moves({square:selected,verbose:true}):[];
+  for(var j=0;j<legal.length;j++)if(legal[j].to===sq)cls+=p?" capture":" target";
+  html+='<button class="'+cls+'" data-sq="'+sq+'" aria-label="'+sq+'">';if(p)html+='<img draggable="false" src="'+pieceFile(p)+'" alt="">';html+='</button>';
+ }html+='</div>'}boardEl.innerHTML=html;
+}
+function boardClick(ev){
+ var elx=ev.target;while(elx&&elx!==boardEl&&!elx.getAttribute("data-sq"))elx=elx.parentNode;if(!elx||elx===boardEl||!chess)return;
+ var sq=elx.getAttribute("data-sq"),turn=chess.turn()==="w"?"white":"black";if(turn!==myColor)return;
+ if(selected){var moves=chess.moves({square:selected,verbose:true}),found=null;for(var i=0;i<moves.length;i++)if(moves[i].to===sq){found=moves[i];break}
+  if(found){var uci=found.from+found.to+(found.promotion||"");api("/api/board/game/"+gameId+"/move/"+uci,"POST","",function(err){if(err)el("gameStatus").textContent="Hamle gönderilemedi: "+err.message});selected=null;return}}
+ var piece=chess.get(sq);if(piece&&((piece.color==="w"&&myColor==="white")||(piece.color==="b"&&myColor==="black")))selected=sq;else selected=null;renderBoard();
+}
+function resign(){if(gameId)api("/api/board/game/"+gameId+"/resign","POST","",function(err){if(err)el("gameStatus").textContent="Oyundan çıkılamadı: "+err.message})}
+function logout(){
+ if(token)api("/api/token","DELETE","",function(){});token="";localStorage.removeItem("ndil_lichess_token");stopStream();if(eventXhr)eventXhr.abort();gameId="";
+ el("boardArea").style.display="none";el("loginArea").style.display="block";el("userArea").style.display="none";setStatus("Çıkış yapıldı.");
+}
+el("loginBtn").onclick=login;el("seekBtn").onclick=seek;el("logoutBtn").onclick=logout;el("resignBtn").onclick=resign;boardEl.onclick=boardClick;
+handleCallback();if(!query().code)loadAccount();
+})();
+</script>
+</body>
+</html>
